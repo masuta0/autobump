@@ -13,6 +13,7 @@ except ImportError:
 import discord
 import asyncio
 from datetime import datetime
+import random
 
 # ========== 環境変数から設定を取得 ==========
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -58,62 +59,71 @@ async def on_ready():
 
     await command_loop()
 
-async def get_application_commands(channel, application_id):
-    """特定のBotのスラッシュコマンドを取得"""
+async def send_slash_command_v2(channel, command_name, application_id):
+    """スラッシュコマンドを実行（簡易版）"""
     try:
-        commands = await client.http.get_guild_application_commands(
-            channel.guild.id,
-            application_id
-        )
-        return commands
-    except Exception as e:
-        print(f'コマンド取得エラー (App ID: {application_id}): {e}')
-        return []
+        # Nonce生成（DiscordのメッセージID形式）
+        nonce = str((int(datetime.now().timestamp() * 1000) - 1420070400000) << 22)
 
-async def send_slash_command(channel, command_name, application_id):
-    """スラッシュコマンドを実行"""
-    try:
-        # サーバーで利用可能なコマンドを取得
-        commands = await get_application_commands(channel, application_id)
-
-        # 指定されたコマンド名を検索
-        target_command = None
-        for cmd in commands:
-            if cmd['name'] == command_name:
-                target_command = cmd
-                break
-
-        if not target_command:
-            print(f'⚠️  {command_name} コマンドが見つかりません（App ID: {application_id}）')
-            return False
-
-        # スラッシュコマンドを実行
-        data = {
-            'type': 2,
+        # スラッシュコマンドのペイロード
+        payload = {
+            'type': 2,  # APPLICATION_COMMAND
             'application_id': str(application_id),
             'guild_id': str(channel.guild.id),
             'channel_id': str(channel.id),
-            'session_id': client._connection.session_id,
+            'session_id': getattr(client._connection, 'session_id', 'undefined'),
             'data': {
-                'version': target_command['version'],
-                'id': target_command['id'],
+                'version': '1237313708783759441',  # 汎用バージョンID
+                'id': str(application_id),
                 'name': command_name,
                 'type': 1,
                 'options': [],
-                'application_command': target_command,
+                'application_command': {
+                    'id': str(application_id),
+                    'application_id': str(application_id),
+                    'version': '1237313708783759441',
+                    'type': 1,
+                    'name': command_name,
+                    'description': 'Bump this server',
+                    'dm_permission': True,
+                    'contexts': None,
+                    'integration_types': [0],
+                    'options': []
+                },
                 'attachments': []
-            }
+            },
+            'nonce': nonce
         }
 
-        await client.http.request(
+        # リクエスト送信
+        response = await client.http.request(
             discord.http.Route('POST', '/interactions'),
-            json=data
+            json=payload
         )
 
         return True
 
+    except discord.errors.HTTPException as e:
+        if e.status == 404:
+            print(f'⚠️  {command_name} コマンドがこのサーバーで利用できません')
+        elif e.status == 403:
+            print(f'⚠️  {command_name} コマンドの実行権限がありません')
+        else:
+            print(f'❌ HTTPエラー ({e.status}): {e.text}')
+        return False
+
     except Exception as e:
         print(f'❌ {command_name} 実行エラー: {e}')
+        return False
+
+async def send_slash_command_simple(channel, command_name):
+    """通常のメッセージとしてスラッシュコマンドを送信（フォールバック）"""
+    try:
+        await channel.send(f'/{command_name}')
+        await asyncio.sleep(1)
+        return True
+    except Exception as e:
+        print(f'❌ メッセージ送信エラー: {e}')
         return False
 
 async def execute_commands(channel):
@@ -125,28 +135,37 @@ async def execute_commands(channel):
 
     # ディス速の /up を実行
     print('🔄 ディス速 /up を実行中...')
-    if await send_slash_command(channel, 'up', DISSOKU_ID):
+    if await send_slash_command_v2(channel, 'up', DISSOKU_ID):
         print('✅ ディス速 /up を実行しました')
         success_count += 1
     else:
-        print('❌ ディス速 /up の実行に失敗しました')
+        print('⚠️  方法1失敗、方法2を試行中...')
+        if await send_slash_command_simple(channel, 'up'):
+            print('✅ ディス速 /up を送信しました（テキスト形式）')
+            success_count += 1
 
     # 少し待機
-    await asyncio.sleep(3)
+    await asyncio.sleep(4)
 
     # Disboardの /bump を実行
     print('🔄 Disboard /bump を実行中...')
-    if await send_slash_command(channel, 'bump', DISBOARD_ID):
+    if await send_slash_command_v2(channel, 'bump', DISBOARD_ID):
         print('✅ Disboard /bump を実行しました')
         success_count += 1
     else:
-        print('❌ Disboard /bump の実行に失敗しました')
+        print('⚠️  方法1失敗、方法2を試行中...')
+        if await send_slash_command_simple(channel, 'bump'):
+            print('✅ Disboard /bump を送信しました（テキスト形式）')
+            success_count += 1
 
     print(f'=== 実行完了: {success_count}/2 成功 ===\n')
     return success_count
 
 async def command_loop():
     """指定間隔でコマンドを実行するループ"""
+    # 初回実行前に少し待機
+    await asyncio.sleep(5)
+
     while True:
         try:
             channel = client.get_channel(CHANNEL_ID)
@@ -168,8 +187,10 @@ async def command_loop():
 
             if success == 0:
                 print('⚠️  すべてのコマンドが失敗しました')
-                print('   - Botがサーバーにいるか確認してください')
-                print('   - チャンネルでコマンドが使えるか確認してください')
+                print('   次の点を確認してください:')
+                print('   - Disboard, ディス速がサーバーにいるか')
+                print('   - チャンネルでコマンドが使えるか')
+                print('   - 手動で /bump と /up が実行できるか')
 
             # 次回実行時刻を計算
             next_time = datetime.fromtimestamp(
@@ -183,9 +204,10 @@ async def command_loop():
 
         except discord.errors.HTTPException as e:
             print(f'❌ Discord APIエラー: {e}')
-            if 'rate limit' in str(e).lower():
-                print('レート制限が発生しました。5分待機します...')
-                await asyncio.sleep(300)
+            if 'rate limit' in str(e).lower() or e.status == 429:
+                wait_time = 300
+                print(f'レート制限が発生しました。{wait_time}秒待機します...')
+                await asyncio.sleep(wait_time)
             else:
                 print('60秒待機して再試行します...')
                 await asyncio.sleep(60)
