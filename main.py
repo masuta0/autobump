@@ -20,9 +20,9 @@ GUILD_ID = os.getenv('GUILD_ID')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 INTERVAL = int(os.getenv('INTERVAL', '7201'))  # デフォルト: 2時間1秒
 
-# コマンドのアプリケーションID（Botごとに異なる）
-DISBOARD_APP_ID = 302050872383242240  # Disboard
-DISSOKU_APP_ID = 761562078095867916   # DissokuのID（例）
+# BotのアプリケーションID
+DISBOARD_ID = 302050872383242240  # Disboard (/bump)
+DISSOKU_ID = 761562078095867916   # ディス速 (/up)
 # =========================================
 
 # 必須環境変数のチェック
@@ -53,53 +53,100 @@ async def on_ready():
         print(f'サーバーID: {GUILD_ID}')
     print(f'チャンネルID: {CHANNEL_ID}')
     print(f'実行間隔: {INTERVAL}秒 (約{INTERVAL//3600}時間{(INTERVAL%3600)//60}分)')
+    print(f'対応Bot: Disboard (/bump), ディス速 (/up)')
     print(f'========================================\n')
 
     await command_loop()
 
-async def send_slash_command(channel, command_name, bot_id):
-    """スラッシュコマンドを送信"""
+async def get_application_commands(channel, application_id):
+    """特定のBotのスラッシュコマンドを取得"""
     try:
-        # スラッシュコマンドとして送信
-        await channel.send(f'</{command_name}:{bot_id}>')
-        return True
+        commands = await client.http.get_guild_application_commands(
+            channel.guild.id,
+            application_id
+        )
+        return commands
     except Exception as e:
-        print(f'❌ スラッシュコマンド送信エラー: {e}')
+        print(f'コマンド取得エラー (App ID: {application_id}): {e}')
+        return []
 
-        # フォールバック: 通常のメッセージとして送信
-        try:
-            await channel.send(f'/{command_name}')
-            return True
-        except Exception as e2:
-            print(f'❌ 通常メッセージ送信エラー: {e2}')
+async def send_slash_command(channel, command_name, application_id):
+    """スラッシュコマンドを実行"""
+    try:
+        # サーバーで利用可能なコマンドを取得
+        commands = await get_application_commands(channel, application_id)
+
+        # 指定されたコマンド名を検索
+        target_command = None
+        for cmd in commands:
+            if cmd['name'] == command_name:
+                target_command = cmd
+                break
+
+        if not target_command:
+            print(f'⚠️  {command_name} コマンドが見つかりません（App ID: {application_id}）')
             return False
 
+        # スラッシュコマンドを実行
+        data = {
+            'type': 2,
+            'application_id': str(application_id),
+            'guild_id': str(channel.guild.id),
+            'channel_id': str(channel.id),
+            'session_id': client._connection.session_id,
+            'data': {
+                'version': target_command['version'],
+                'id': target_command['id'],
+                'name': command_name,
+                'type': 1,
+                'options': [],
+                'application_command': target_command,
+                'attachments': []
+            }
+        }
+
+        await client.http.request(
+            discord.http.Route('POST', '/interactions'),
+            json=data
+        )
+
+        return True
+
+    except Exception as e:
+        print(f'❌ {command_name} 実行エラー: {e}')
+        return False
+
 async def execute_commands(channel):
-    """利用可能なすべてのコマンドを実行"""
+    """ディス速とDisboardのコマンドを実行"""
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f'\n=== [{current_time}] コマンド実行開始 ===')
+
     success_count = 0
 
-    # /bump コマンド（Disboard）を試行
-    print(f'[{current_time}] /bump を実行中...')
-    if await send_slash_command(channel, 'bump', DISBOARD_APP_ID):
-        print(f'✅ /bump を実行しました')
+    # ディス速の /up を実行
+    print('🔄 ディス速 /up を実行中...')
+    if await send_slash_command(channel, 'up', DISSOKU_ID):
+        print('✅ ディス速 /up を実行しました')
         success_count += 1
+    else:
+        print('❌ ディス速 /up の実行に失敗しました')
 
+    # 少し待機
     await asyncio.sleep(3)
 
-    # /up コマンドを試行
-    print(f'[{current_time}] /up を実行中...')
-    try:
-        await channel.send('/up')
-        print(f'✅ /up を実行しました')
+    # Disboardの /bump を実行
+    print('🔄 Disboard /bump を実行中...')
+    if await send_slash_command(channel, 'bump', DISBOARD_ID):
+        print('✅ Disboard /bump を実行しました')
         success_count += 1
-    except Exception as e:
-        print(f'❌ /up の実行エラー: {e}')
+    else:
+        print('❌ Disboard /bump の実行に失敗しました')
 
+    print(f'=== 実行完了: {success_count}/2 成功 ===\n')
     return success_count
 
 async def command_loop():
-    """指定間隔でコマンドを実行"""
+    """指定間隔でコマンドを実行するループ"""
     while True:
         try:
             channel = client.get_channel(CHANNEL_ID)
@@ -110,40 +157,69 @@ async def command_loop():
                 await asyncio.sleep(300)
                 continue
 
+            # チャンネルがギルド（サーバー）に属しているか確認
+            if not hasattr(channel, 'guild') or channel.guild is None:
+                print(f'❌ エラー: チャンネルがサーバーに属していません（DMチャンネルは非対応）')
+                await asyncio.sleep(300)
+                continue
+
             # コマンドを実行
             success = await execute_commands(channel)
 
-            if success > 0:
-                print(f'✅ {success}個のコマンドを実行しました')
-            else:
-                print(f'⚠️  コマンドの実行に失敗しました')
+            if success == 0:
+                print('⚠️  すべてのコマンドが失敗しました')
+                print('   - Botがサーバーにいるか確認してください')
+                print('   - チャンネルでコマンドが使えるか確認してください')
 
             # 次回実行時刻を計算
             next_time = datetime.fromtimestamp(
                 datetime.now().timestamp() + INTERVAL
             ).strftime('%Y-%m-%d %H:%M:%S')
 
-            print(f'⏰ 次回実行: {next_time}')
-            print(f'💤 {INTERVAL}秒待機中...\n')
+            print(f'⏰ 次回実行予定: {next_time}')
+            print(f'💤 {INTERVAL}秒 ({INTERVAL//3600}時間{(INTERVAL%3600)//60}分) 待機中...')
 
             await asyncio.sleep(INTERVAL)
 
         except discord.errors.HTTPException as e:
             print(f'❌ Discord APIエラー: {e}')
-            print('レート制限の可能性があります。60秒待機します...')
-            await asyncio.sleep(60)
+            if 'rate limit' in str(e).lower():
+                print('レート制限が発生しました。5分待機します...')
+                await asyncio.sleep(300)
+            else:
+                print('60秒待機して再試行します...')
+                await asyncio.sleep(60)
 
         except Exception as e:
             print(f'❌ 予期しないエラー: {e}')
+            import traceback
+            traceback.print_exc()
             print('60秒待機して再試行します...')
             await asyncio.sleep(60)
 
+@client.event
+async def on_error(event, *args, **kwargs):
+    """エラーハンドリング"""
+    import traceback
+    print(f'❌ イベントエラー ({event}):')
+    traceback.print_exc()
+
 # Botを起動
 try:
-    print('Botを起動しています...')
+    print('='*50)
+    print('Discord Selfbot - ディス速・Disboard自動実行')
+    print('='*50)
+    print('⚠️  警告: Selfbotの使用はDiscord利用規約違反です')
+    print('⚠️  アカウントBANのリスクがあります')
+    print('='*50)
+    print('\nBotを起動しています...')
     client.run(TOKEN)
 except discord.errors.LoginFailure:
     print('❌ ログイン失敗: トークンが無効です')
     print('DISCORD_TOKENを確認してください')
+except KeyboardInterrupt:
+    print('\n\n👋 Botを終了します...')
 except Exception as e:
     print(f'❌ 起動エラー: {e}')
+    import traceback
+    traceback.print_exc()
