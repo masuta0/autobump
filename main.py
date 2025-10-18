@@ -19,17 +19,37 @@ import json
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = os.getenv('GUILD_ID')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
-INTERVAL = int(os.getenv('INTERVAL', '7201'))  # デフォルト: 2時間1秒
+INTERVAL = int(os.getenv('INTERVAL', '7201'))
 # =========================================
+
+# デバッグ情報を表示
+print('='*50)
+print('環境変数チェック')
+print('='*50)
+print(f'DISCORD_TOKEN: {"設定済み" if TOKEN else "❌ 未設定"}')
+if TOKEN:
+    print(f'トークン長: {len(TOKEN)} 文字')
+    print(f'トークン先頭: {TOKEN[:20]}...' if len(TOKEN) > 20 else f'トークン: {TOKEN}')
+print(f'CHANNEL_ID: {CHANNEL_ID if CHANNEL_ID else "❌ 未設定"}')
+print(f'GUILD_ID: {GUILD_ID if GUILD_ID else "未設定（オプション）"}')
+print(f'INTERVAL: {INTERVAL}秒')
+print('='*50)
 
 # 必須環境変数のチェック
 if not TOKEN:
     print('❌ エラー: DISCORD_TOKEN が設定されていません')
+    print('\nKoyebで以下を確認してください:')
+    print('1. Service Settings → Environment Variables')
+    print('2. DISCORD_TOKEN という名前の変数が存在するか')
+    print('3. 値が正しく入力されているか')
     sys.exit(1)
 
 if not CHANNEL_ID:
     print('❌ エラー: CHANNEL_ID が設定されていません')
     sys.exit(1)
+
+# トークンの形式チェック
+TOKEN = TOKEN.strip()  # 前後の空白を削除
 
 # IDを整数に変換
 try:
@@ -48,7 +68,8 @@ command_cache = {}
 @client.event
 async def on_ready():
     print(f'========================================')
-    print(f'ログイン成功: {client.user}')
+    print(f'✅ ログイン成功: {client.user}')
+    print(f'ユーザーID: {client.user.id}')
     if GUILD_ID:
         print(f'サーバーID: {GUILD_ID}')
     print(f'チャンネルID: {CHANNEL_ID}')
@@ -61,10 +82,9 @@ async def on_ready():
 async def search_commands_in_channel(channel):
     """チャンネル内でスラッシュコマンドを検索"""
     try:
-        # スラッシュコマンドの候補を取得
         url = f'https://discord.com/api/v9/channels/{channel.id}/application-commands/search'
         params = {
-            'type': 1,  # CHAT_INPUT
+            'type': 1,
             'include_applications': 'true'
         }
 
@@ -195,7 +215,6 @@ async def execute_commands(channel):
 
 async def command_loop():
     """指定間隔でコマンドを実行するループ"""
-    # 初回実行前に少し待機
     await asyncio.sleep(5)
 
     while True:
@@ -212,13 +231,11 @@ async def command_loop():
                 await asyncio.sleep(300)
                 continue
 
-            # コマンドを実行
             success = await execute_commands(channel)
 
             if success == 0:
                 print('⚠️  すべてのコマンドが失敗しました')
 
-            # 次回実行時刻を計算
             next_time = datetime.fromtimestamp(
                 datetime.now().timestamp() + INTERVAL
             ).strftime('%Y-%m-%d %H:%M:%S')
@@ -234,7 +251,6 @@ async def command_loop():
             traceback.print_exc()
             await asyncio.sleep(60)
 
-# Botを起動
 try:
     print('='*50)
     print('Discord Selfbot - ディス速・Disboard自動実行')
@@ -243,6 +259,16 @@ try:
     print('='*50)
     print('\nBotを起動しています...')
     client.run(TOKEN)
+except discord.errors.LoginFailure as e:
+    print(f'❌ ログイン失敗: {e}')
+    print('\n原因:')
+    print('1. トークンが無効または期限切れ')
+    print('2. トークンの形式が間違っている')
+    print('3. Discordによってトークンが無効化された')
+    print('\n解決方法:')
+    print('1. 新しいトークンを取得してください')
+    print('2. トークンに余分な空白や改行がないか確認')
+    print('3. Koyebの環境変数を再設定してください')
 except Exception as e:
     print(f'❌ 起動エラー: {e}')
     import traceback
